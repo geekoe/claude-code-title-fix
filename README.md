@@ -6,32 +6,32 @@
 
 ## 中文说明
 
-### 问题
+Claude Code v2.1.72+ 有两个关于终端标题的问题，本仓库提供两个独立的修复脚本。
 
-Claude Code 在 v2.1.72+ 版本中存在一个 bug：终端 tab 标题不再自动更新为对话主题。
+### 问题一：标题不更新（fix.sh）
 
-正常情况下，当你发送第一条消息后，Claude Code 会调用 Haiku 模型分析你的消息，生成一个 2-3 个词的主题作为终端标题（例如 "✳ Fix Login Bug"）。但升级后这个功能失效了，标题始终停留在 "✳ Claude Code"。
+终端 tab 标题不再自动更新为对话主题，始终停留在 "✳ Claude Code"。
 
-### 原因
+**原因：** 代码中的条件 `previousMessages.length <= 1` 要求之前的消息数 ≤ 1 才触发标题生成，但启动时的初始化消息已经让数组长度 ≥ 2，条件永远不满足。
 
-Claude Code 的代码中有一个条件判断，用于决定是否生成标题：
+**修复：** 将 `previousMessages.length <= 1` 替换为 `!autoTitle`（检查是否已生成过标题），只要没生成过就会尝试生成。
 
-```
-previousMessages.length <= 1
-```
+### 问题二：标题太短且是英文（fix-title-prompt.sh）
 
-这个条件要求"之前的消息数量 ≤ 1"时才触发标题生成。但由于启动时的初始化消息（系统消息等）已经让这个数组的长度达到 2 或更多，导致条件**永远不满足**，标题生成函数永远不会被调用。
+默认标题只有 2-3 个英文单词（如 "Fix Login Bug"），信息量太少，多个 tab 时难以区分。
 
-### 修复方式
-
-脚本将 `previousMessages.length <= 1` 替换为 `!autoTitle`（检查是否已经生成过自动标题）。这样只要还没生成过标题，就会尝试生成——这才是正确的逻辑。
+**修复：** 将标题生成的 prompt 改为中文，生成 8-15 字的摘要（如「修复登录页面样式错乱」而不是「Fix Bug」）。
 
 ### 使用方法
 
-**一键修复（推荐）：**
+**一键全部修复（推荐）：**
 
 ```bash
+# 修复标题不更新
 curl -fsSL https://raw.githubusercontent.com/geekoe/claude-code-title-fix/main/fix.sh | bash
+
+# 改为中文长标题（可选）
+curl -fsSL https://raw.githubusercontent.com/geekoe/claude-code-title-fix/main/fix-title-prompt.sh | bash
 ```
 
 **或者克隆后运行：**
@@ -39,11 +39,12 @@ curl -fsSL https://raw.githubusercontent.com/geekoe/claude-code-title-fix/main/f
 ```bash
 git clone https://github.com/geekoe/claude-code-title-fix.git
 bash claude-code-title-fix/fix.sh
+bash claude-code-title-fix/fix-title-prompt.sh  # 可选
 ```
 
 修复后**重启 Claude Code** 即可生效。
 
-> ⚠️ 每次升级 Claude Code 后需要重新运行此脚本。
+> ⚠️ 每次升级 Claude Code 后需要重新运行。
 
 ### 测试过的版本
 
@@ -55,40 +56,40 @@ bash claude-code-title-fix/fix.sh
 ### 运行不成功怎么办？
 
 1. **提示找不到 `cli.js`**：确保 `claude` 命令在 PATH 中，或者 Claude Code 是通过 npm 全局安装的。
-2. **提示找不到匹配的代码模式**：可能新版本改动了代码结构。请到 [Issues](https://github.com/geekoe/claude-code-title-fix/issues) 提交问题，附上你的 Claude Code 版本号（运行 `claude --version`）。
-3. **提示已经修复过**：说明之前运行过脚本且修复仍然有效，无需操作。
-4. **想恢复原始文件**：脚本会自动创建 `.bak` 备份文件，路径会在输出中显示。
+2. **提示找不到匹配的代码模式**：可能新版本改动了代码结构。请到 [Issues](https://github.com/geekoe/claude-code-title-fix/issues) 提交问题，附上你的 Claude Code 版本号（`claude --version`）。
+3. **提示已经修复过**：之前运行过且修复仍有效，无需操作。
+4. **想恢复原始文件**：脚本会自动创建 `.bak` 备份，路径会在输出中显示。
 
 ---
 
 ## English
 
-### The Bug
+Claude Code v2.1.72+ has two issues with terminal tab titles. This repo provides two independent fix scripts.
 
-Claude Code v2.1.72+ has a bug where the terminal tab title no longer auto-updates to reflect the conversation topic.
+### Issue 1: Title not updating (fix.sh)
 
-Normally, after you send your first message, Claude Code calls the Haiku model to analyze it and generates a 2-3 word topic as the terminal title (e.g., "✳ Fix Login Bug"). After upgrading, this feature stopped working — the title stays as "✳ Claude Code" permanently.
+The terminal tab title no longer auto-updates to reflect the conversation topic — it stays as "✳ Claude Code" permanently.
 
-### Root Cause
+**Root cause:** The condition `previousMessages.length <= 1` requires ≤ 1 previous messages before triggering title generation. But initialization messages already push the array to length ≥ 2, so the condition never passes.
 
-The code has a condition that gates title generation:
+**Fix:** Replaces `previousMessages.length <= 1` with `!autoTitle` (checks if a title has already been generated).
 
-```
-previousMessages.length <= 1
-```
+### Issue 2: Title too short (fix-title-prompt.sh)
 
-This requires the previous messages array to have ≤ 1 entry before triggering title generation. However, initialization messages (system messages, etc.) already push this array to length ≥ 2 by the time the user sends their first message. The condition **never passes**, so the title generation function is never called.
+The default title is only 2-3 English words (e.g., "Fix Login Bug"), which is too brief to distinguish between multiple tabs.
 
-### The Fix
-
-The script replaces `previousMessages.length <= 1` with `!autoTitle` (checking whether an auto-generated title already exists). This way, title generation is attempted as long as no title has been generated yet — which is the correct logic.
+**Fix:** Replaces the title generation prompt to produce longer, more descriptive summaries in Chinese (8-15 characters). You can modify the prompt in the script to suit your preferred language.
 
 ### Usage
 
 **One-liner (recommended):**
 
 ```bash
+# Fix title not updating
 curl -fsSL https://raw.githubusercontent.com/geekoe/claude-code-title-fix/main/fix.sh | bash
+
+# Use longer Chinese titles (optional)
+curl -fsSL https://raw.githubusercontent.com/geekoe/claude-code-title-fix/main/fix-title-prompt.sh | bash
 ```
 
 **Or clone and run:**
@@ -96,11 +97,12 @@ curl -fsSL https://raw.githubusercontent.com/geekoe/claude-code-title-fix/main/f
 ```bash
 git clone https://github.com/geekoe/claude-code-title-fix.git
 bash claude-code-title-fix/fix.sh
+bash claude-code-title-fix/fix-title-prompt.sh  # optional
 ```
 
-**Restart Claude Code** after running the fix.
+**Restart Claude Code** after running.
 
-> ⚠️ You need to re-run this script after every Claude Code upgrade.
+> ⚠️ Re-run after every Claude Code upgrade.
 
 ### Tested Versions
 
@@ -112,6 +114,6 @@ bash claude-code-title-fix/fix.sh
 ### Troubleshooting
 
 1. **"Cannot find cli.js"**: Make sure the `claude` command is in your PATH, or that Claude Code was installed globally via npm.
-2. **"Could not find the buggy code pattern"**: The code structure may have changed in a newer version. Please [open an issue](https://github.com/geekoe/claude-code-title-fix/issues) with your Claude Code version (`claude --version`).
-3. **"Already fixed"**: The script was previously applied and the fix is still in place. No action needed.
-4. **Want to restore the original file**: The script automatically creates a `.bak` backup. The path is shown in the output.
+2. **"Could not find the buggy code pattern"**: The code structure may have changed. Please [open an issue](https://github.com/geekoe/claude-code-title-fix/issues) with your Claude Code version (`claude --version`).
+3. **"Already fixed/patched"**: Previously applied and still in effect. No action needed.
+4. **Restore original file**: The script creates a `.bak` backup automatically. Path is shown in the output.
