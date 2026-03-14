@@ -1,7 +1,11 @@
 #!/bin/bash
 # Claude Code Terminal Bell Fix
 # 修复 OSC 序列使用 BEL(\x07) 作终止符导致终端不断出现未读标记的问题
-# 改为使用 ST(\x1b\\) 作为 OSC 终止符，notifyBell 不受影响
+#
+# 原因：gP 函数生成所有 OSC 转义序列（标题、进度条等），使用 BEL 作终止符。
+#       标题 spinner 动画不断刷新，每次都发一个 BEL，终端就显示未读标记。
+# 修复：将 gP 的终止符从 BEL 改为 ST(\x1b\\)。只改这一个函数，影响最小。
+#       notifyBell（真正的通知）不经过 gP，不受影响。
 #
 # 用法：bash fix-bell.sh
 #       升级 Claude Code 后需重新运行
@@ -26,29 +30,31 @@ fi
 
 echo "📄 cli.js: $CLI_JS"
 
-# Count how many BEL variables exist
-BEL_COUNT=$(grep -cE '[A-Za-z0-9$_]+="\\x07"' "$CLI_JS" || true)
+# Match the OSC terminator in gP function:
+#   VAR.terminal==="kitty"?ST_VAR:BEL_VAR
+# Only kitty uses ST, others use BEL. We change it to always use ST.
+MATCH=$(grep -oE '[A-Za-z0-9$_]+\.terminal==="kitty"\?[A-Za-z0-9$_]+:[A-Za-z0-9$_]+' "$CLI_JS" | head -1)
 
-if [ "$BEL_COUNT" -eq 0 ]; then
-  echo "✅ Already fixed or no BEL variables found."
-  exit 0
+if [ -z "$MATCH" ]; then
+  if ! grep -q 'terminal==="kitty"' "$CLI_JS"; then
+    echo "✅ Already fixed."
+    exit 0
+  fi
+  echo "❌ Could not find the OSC terminator pattern in gP function."
+  echo "   Please open an issue: https://github.com/geekoe/claude-code-title-fix/issues"
+  exit 1
 fi
 
-echo "🔍 Found $BEL_COUNT BEL (\\x07) variable assignments"
+echo "🔍 Found: $MATCH"
 
-# Find the notifyBell variable: useCallback(()=>{A(VAR)},[A])
-# where VAR is one of the BEL variables
-BELL_VAR=$(grep -oE 'useCallback\(\(\)=>\{[A-Za-z0-9$_]+\([A-Za-z0-9$_]+\)' "$CLI_JS" | grep -oE '\([A-Za-z0-9$_]+\)$' | tr -d '()' | while read var; do
-  if grep -q "${var}=\"\\\\x07\"" "$CLI_JS"; then
-    echo "$var"
-  fi
-done | head -1)
+# Extract the ST variable (between ? and :)
+ST_VAR=$(echo "$MATCH" | sed 's/.*?//' | sed 's/:.*//')
+echo "🔧 Replacing with: $ST_VAR (always use ST terminator)"
 
-if [ -z "$BELL_VAR" ]; then
-  echo "⚠️  Could not identify notifyBell variable, will replace all BEL vars"
-  BELL_VAR="__NONE__"
-else
-  echo "🔔 notifyBell uses variable: $BELL_VAR (will keep it working)"
+COUNT=$(grep -c "$MATCH" "$CLI_JS")
+if [ "$COUNT" -ne 1 ]; then
+  echo "⚠️  Found ${COUNT} matches (expected 1), aborting."
+  exit 1
 fi
 
 # Backup (only if no backup exists yet)
@@ -56,53 +62,26 @@ if [ ! -f "${CLI_JS}.bak" ]; then
   cp "$CLI_JS" "${CLI_JS}.bak"
 fi
 
-# Use python for reliable replacement
-CLI_JS_ENV="$CLI_JS" BELL_VAR_ENV="$BELL_VAR" python3 << 'PYEOF'
-import os, sys
-
-CLI_JS = os.environ['CLI_JS_ENV']
-BELL_VAR = os.environ['BELL_VAR_ENV']
-
-with open(CLI_JS, 'r') as f:
+# Replace using python for reliability
+CLI_JS_ENV="$CLI_JS" OLD_ENV="$MATCH" NEW_ENV="$ST_VAR" python3 << 'PYEOF'
+import os
+path = os.environ['CLI_JS_ENV']
+old = os.environ['OLD_ENV']
+new = os.environ['NEW_ENV']
+with open(path, 'r') as f:
     content = f.read()
-
-# In the JS source file, \x07 appears as literal text: backslash x 0 7
-OLD = r'="\x07"'
-NEW = r'="\x1b\\"'
-
-count = content.count(OLD)
-print(f'   Found {count} literal \\x07 assignments')
-
-if count == 0:
-    print('   Nothing to replace')
-    sys.exit(0)
-
-content = content.replace(OLD, NEW)
-
-# Fix notifyBell to hardcode \x07 so real bell notifications still work
-# Pattern: (()=>{A(BELL_VAR)}, where BELL_VAR is now pointing to ST
-if BELL_VAR != '__NONE__':
-    search = f'(()=>{{A({BELL_VAR})}}'
-    if search in content:
-        replace = r'(()=>{A("\x07")}'
-        content = content.replace(search, replace, 1)
-        print(f'   Fixed notifyBell to hardcode \\x07')
-    else:
-        print(f'   Warning: could not find notifyBell callback')
-
-with open(CLI_JS, 'w') as f:
+content = content.replace(old, new, 1)
+with open(path, 'w') as f:
     f.write(content)
-
-remaining = content.count(OLD)
-print(f'   Remaining \\x07 assignments: {remaining}')
 PYEOF
 
-# Final check
-REMAINING=$(grep -cE '[A-Za-z0-9$_]+="\\x07"' "$CLI_JS" || true)
-if [ "$REMAINING" -eq 0 ]; then
-  echo "✅ Fixed! All BEL terminators replaced with ST."
-  echo "   notifyBell still sends real BEL for notifications."
-  echo "   Restart Claude Code to take effect."
+# Verify
+if grep -q "$MATCH" "$CLI_JS"; then
+  echo "❌ Replacement failed, restoring backup..."
+  cp "${CLI_JS}.bak" "$CLI_JS"
+  exit 1
 else
-  echo "⚠️  $REMAINING BEL assignments remain (started with $BEL_COUNT)"
+  echo "✅ Fixed! OSC sequences now use ST instead of BEL."
+  echo "   notifyBell (real notifications) is not affected."
+  echo "   Restart Claude Code to take effect."
 fi
