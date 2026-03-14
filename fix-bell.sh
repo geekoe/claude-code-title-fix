@@ -26,37 +26,29 @@ fi
 
 echo "📄 cli.js: $CLI_JS"
 
-# Match the OSC terminator selection in gP function:
-#   Q8.terminal==="kitty"?_U3:RU
-# where _U3 = ST (\x1b\\) and RU = BEL (\x07)
-# We want all terminals to use ST, so replace with just _U3
+# Count how many BEL variables exist
+BEL_COUNT=$(grep -cE '[A-Za-z0-9$_]+="\\x07"' "$CLI_JS" || true)
 
-# Use a regex pattern to match regardless of variable names:
-#   VAR.terminal==="kitty"?VAR:VAR
-MATCH=$(grep -oE '[A-Za-z0-9$_]+\.terminal==="kitty"\?[A-Za-z0-9$_]+:[A-Za-z0-9$_]+' "$CLI_JS" | head -1)
-
-if [ -z "$MATCH" ]; then
-  # Check if already fixed
-  if ! grep -q 'terminal==="kitty"' "$CLI_JS"; then
-    echo "✅ Already fixed or not applicable."
-    exit 0
-  fi
-  echo "❌ Could not find the OSC terminator pattern."
-  echo "   Please open an issue: https://github.com/geekoe/claude-code-title-fix/issues"
-  exit 1
+if [ "$BEL_COUNT" -eq 0 ]; then
+  echo "✅ Already fixed or no BEL variables found."
+  exit 0
 fi
 
-echo "🔍 Found: $MATCH"
+echo "🔍 Found $BEL_COUNT BEL (\\x07) variable assignments"
 
-# Extract the ST variable (the one after ?)
-ST_VAR=$(echo "$MATCH" | sed 's/.*?//' | sed 's/:.*//')
+# Find the notifyBell variable: useCallback(()=>{A(VAR)},[A])
+# where VAR is one of the BEL variables
+BELL_VAR=$(grep -oE 'useCallback\(\(\)=>\{[A-Za-z0-9$_]+\([A-Za-z0-9$_]+\)' "$CLI_JS" | grep -oE '\([A-Za-z0-9$_]+\)$' | tr -d '()' | while read var; do
+  if grep -q "${var}=\"\\\\x07\"" "$CLI_JS"; then
+    echo "$var"
+  fi
+done | head -1)
 
-echo "🔧 Replacing OSC terminator: always use ST ($ST_VAR) instead of BEL"
-
-COUNT=$(grep -c "$MATCH" "$CLI_JS")
-if [ "$COUNT" -ne 1 ]; then
-  echo "⚠️  Found ${COUNT} matches (expected 1), aborting."
-  exit 1
+if [ -z "$BELL_VAR" ]; then
+  echo "⚠️  Could not identify notifyBell variable, will replace all BEL vars"
+  BELL_VAR="__NONE__"
+else
+  echo "🔔 notifyBell uses variable: $BELL_VAR (will keep it working)"
 fi
 
 # Backup (only if no backup exists yet)
@@ -64,27 +56,53 @@ if [ ! -f "${CLI_JS}.bak" ]; then
   cp "$CLI_JS" "${CLI_JS}.bak"
 fi
 
-# Replace: Q8.terminal==="kitty"?_U3:RU → _U3
-# Using python for reliable replacement
-python3 -c "
-import sys
-path = sys.argv[1]
-old = sys.argv[2]
-new = sys.argv[3]
-with open(path, 'r') as f:
-    content = f.read()
-content = content.replace(old, new, 1)
-with open(path, 'w') as f:
-    f.write(content)
-" "$CLI_JS" "$MATCH" "$ST_VAR"
+# Use python for reliable replacement
+CLI_JS_ENV="$CLI_JS" BELL_VAR_ENV="$BELL_VAR" python3 << 'PYEOF'
+import os, sys
 
-# Verify
-if grep -q "$MATCH" "$CLI_JS"; then
-  echo "❌ Replacement failed, restoring backup..."
-  cp "${CLI_JS}.bak" "$CLI_JS"
-  exit 1
-else
-  echo "✅ Fixed! OSC sequences now use ST instead of BEL."
-  echo "   notifyBell (real notifications) is not affected."
+CLI_JS = os.environ['CLI_JS_ENV']
+BELL_VAR = os.environ['BELL_VAR_ENV']
+
+with open(CLI_JS, 'r') as f:
+    content = f.read()
+
+# In the JS source file, \x07 appears as literal text: backslash x 0 7
+OLD = r'="\x07"'
+NEW = r'="\x1b\\"'
+
+count = content.count(OLD)
+print(f'   Found {count} literal \\x07 assignments')
+
+if count == 0:
+    print('   Nothing to replace')
+    sys.exit(0)
+
+content = content.replace(OLD, NEW)
+
+# Fix notifyBell to hardcode \x07 so real bell notifications still work
+# Pattern: (()=>{A(BELL_VAR)}, where BELL_VAR is now pointing to ST
+if BELL_VAR != '__NONE__':
+    search = f'(()=>{{A({BELL_VAR})}}'
+    if search in content:
+        replace = r'(()=>{A("\x07")}'
+        content = content.replace(search, replace, 1)
+        print(f'   Fixed notifyBell to hardcode \\x07')
+    else:
+        print(f'   Warning: could not find notifyBell callback')
+
+with open(CLI_JS, 'w') as f:
+    f.write(content)
+
+remaining = content.count(OLD)
+print(f'   Remaining \\x07 assignments: {remaining}')
+PYEOF
+
+# Final check
+REMAINING=$(grep -cE '[A-Za-z0-9$_]+="\\x07"' "$CLI_JS" || true)
+if [ "$REMAINING" -eq 0 ]; then
+  echo "✅ Fixed! All BEL terminators replaced with ST."
+  echo "   notifyBell still sends real BEL for notifications."
   echo "   Restart Claude Code to take effect."
+else
+  echo "⚠️  $REMAINING BEL assignments remain (started with $BEL_COUNT)"
 fi
